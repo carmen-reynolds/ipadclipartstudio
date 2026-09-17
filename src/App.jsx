@@ -56,6 +56,14 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
+  useEffect(() => {
+    const handleToastEvent = (e) => {
+      if (e.detail) showToast(e.detail);
+    };
+    window.addEventListener('app-toast', handleToastEvent);
+    return () => window.removeEventListener('app-toast', handleToastEvent);
+  }, []);
+
   // ─── Handle File Upload (iPad Photos / Files / Camera) ───
   const handleFileSelect = (e) => {
     const file = e.target.files && e.target.files[0];

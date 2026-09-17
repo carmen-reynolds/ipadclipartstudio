@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { useStore } from '../store';
-import { ChevronRight, Sliders, Undo2, Redo2, Sparkles, Wand2 } from 'lucide-react';
+import { ChevronRight, Sliders, Undo2, Redo2, Sparkles, Wand2, Scissors } from 'lucide-react';
 
 export function ToolsPanel({ onOpenWorkflow, onReProcessQuality }) {
   const modelMode = useStore((s) => s.modelMode);
@@ -11,6 +11,7 @@ export function ToolsPanel({ onOpenWorkflow, onReProcessQuality }) {
   const setGhostOverlay = useStore((s) => s.setGhostOverlay);
   const ghostBadges = useStore((s) => s.ghostBadges);
   const setGhostBadges = useStore((s) => s.setGhostBadges);
+  const detectedSuggestions = useStore((s) => s.detectedSuggestions);
   const brushSize = useStore((s) => s.brushSize);
   const setBrushSize = useStore((s) => s.setBrushSize);
   const tolerance = useStore((s) => s.tolerance);
@@ -367,6 +368,68 @@ export function ToolsPanel({ onOpenWorkflow, onReProcessQuality }) {
               Crop
             </button>
           </div>
+
+          {/* Dedicated Freehand Lasso & Suggestion Controls in Crop Mode */}
+          {editorMode === 'crop' && (
+            <div style={{
+              marginTop: '10px',
+              padding: '10px',
+              borderRadius: '8px',
+              backgroundColor: 'rgba(99, 102, 241, 0.1)',
+              border: '1px solid rgba(99, 102, 241, 0.25)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '11px', fontWeight: 600, color: '#c7d2fe', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                  <Scissors size={12} />
+                  <span>Freehand Pencil Lasso</span>
+                </span>
+                <span style={{ fontSize: '9px', backgroundColor: 'rgba(34, 197, 94, 0.25)', color: '#4ade80', padding: '1px 6px', borderRadius: '10px', fontWeight: 700 }}>
+                  ACTIVE
+                </span>
+              </div>
+              <div style={{ fontSize: '10px', color: 'var(--text-secondary)', lineHeight: 1.35 }}>
+                Draw a loop with your Apple Pencil or finger around any illustration to add it directly to the crop tray.
+              </div>
+
+              {detectedSuggestions.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '2px' }}>
+                  <div style={{ fontSize: '10px', color: 'var(--text-muted)' }}>
+                    {detectedSuggestions.length} suggested cut{detectedSuggestions.length > 1 ? 's' : ''} on canvas:
+                  </div>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => window.dispatchEvent(new CustomEvent('crop-accept-all'))}
+                      style={{ flex: 1, padding: '6px 4px', fontSize: '10px', fontWeight: 600, backgroundColor: 'rgba(34, 197, 94, 0.18)', borderColor: 'rgba(34, 197, 94, 0.4)', color: '#86efac' }}
+                      title="Accept all remaining auto-detected illustrations into the crop tray"
+                    >
+                      ✓ Accept All ({detectedSuggestions.length})
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => window.dispatchEvent(new CustomEvent('crop-dismiss-all'))}
+                      style={{ flex: 1, padding: '6px 4px', fontSize: '10px', fontWeight: 600, backgroundColor: 'rgba(239, 68, 68, 0.18)', borderColor: 'rgba(239, 68, 68, 0.4)', color: '#fca5a5' }}
+                      title="Clear all suggestion badges to leave the canvas clean for freehand drawing"
+                    >
+                      ✕ Dismiss All
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => window.dispatchEvent(new CustomEvent('crop-redetect'))}
+                  style={{ width: '100%', padding: '6px', fontSize: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px', backgroundColor: 'rgba(255, 255, 255, 0.05)' }}
+                >
+                  <Sparkles size={11} />
+                  <span>Re-Detect Guessed Cuts</span>
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* History */}

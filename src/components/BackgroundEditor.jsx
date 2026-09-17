@@ -95,6 +95,10 @@ export default function BackgroundEditor() {
   const cursorRef = useRef(null);
   const cropCanvasRef = useRef(null);
   const lastDetectedRef = useRef(null);
+  const isDrawingRef = useRef(false);
+  const drawingPointerId = useRef(null);
+  const activePenId = useRef(null);
+  const activeLassoPointsRef = useRef([]);
 
   const processedImage = useStore((s) => s.processedImage);
   const originalImage = useStore((s) => s.originalImage);
@@ -379,8 +383,8 @@ export default function BackgroundEditor() {
         cropRedoStack.current.push(currentSnap);
         
         const prevSnap = cropUndoStack.current.pop();
-        setCropPoints(prevSnap.points);
-        setCropTray(prevSnap.tray);
+        setCropPoints(prevSnap.points || []);
+        setCropTray(prevSnap.tray || []);
         
         setCanCropUndo(cropUndoStack.current.length > 0);
         setCanCropRedo(true);
@@ -399,8 +403,8 @@ export default function BackgroundEditor() {
       cropUndoStack.current.push(currentSnap);
       
       const nextSnap = cropRedoStack.current.pop();
-      setCropPoints(nextSnap.points);
-      setCropTray(nextSnap.tray);
+      setCropPoints(nextSnap.points || []);
+      setCropTray(nextSnap.tray || []);
       
       setCanCropUndo(true);
       setCanCropRedo(cropRedoStack.current.length > 0);
@@ -522,32 +526,29 @@ export default function BackgroundEditor() {
     }
   }, [editorMode, isEditorReady, runAutoDetect]);
 
-  // ─── Draw Crop Lasso Overlay ───
-  const drawCropOverlay = useCallback(() => {
+  // ─── Direct High-Performance Active Lasso Renderer ───
+  const renderActiveLassoToCanvas = useCallback((pts) => {
     const cropCanvas = cropCanvasRef.current;
     if (!cropCanvas) return;
-    const dpr = window.devicePixelRatio || 1;
-    cropCanvas.width = canvasSize.width * dpr;
-    cropCanvas.height = canvasSize.height * dpr;
-    cropCanvas.style.width = `${canvasSize.width}px`;
-    cropCanvas.style.height = `${canvasSize.height}px`;
     const ctx = cropCanvas.getContext('2d');
-    ctx.scale(dpr, dpr);
+    if (!ctx) return;
+
     ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
 
-    // Draw detected suggestions if any exist
-    if (detectedSuggestions && detectedSuggestions.length > 0) {
-      detectedSuggestions.forEach((suggestion) => {
+    // 1. Draw existing detected suggestions underneath
+    const suggestions = useStore.getState().detectedSuggestions;
+    if (suggestions && suggestions.length > 0) {
+      suggestions.forEach((suggestion) => {
         const poly = suggestion.polygon;
         if (!poly || poly.length < 2) return;
 
         const isHovered = suggestion.id === hoveredSuggestionId;
         ctx.save();
-        ctx.strokeStyle = isHovered ? 'rgba(250, 204, 21, 0.95)' : 'rgba(56, 189, 248, 0.85)'; // Yellow when hovered, sky-blue otherwise
+        ctx.strokeStyle = isHovered ? 'rgba(250, 204, 21, 0.95)' : 'rgba(56, 189, 248, 0.85)';
         ctx.lineWidth = isHovered ? 3.5 : 2;
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
-        ctx.setLineDash(isHovered ? [] : [4, 4]); // Solid outline when hovered, dashed otherwise
+        ctx.setLineDash(isHovered ? [] : [4, 4]);
         ctx.beginPath();
         ctx.moveTo(poly[0].x, poly[0].y);
         for (let i = 1; i < poly.length; i++) {
@@ -559,49 +560,179 @@ export default function BackgroundEditor() {
       });
     }
 
-    if (cropPoints.length < 2) return;
+    if (!pts || pts.length < 2) {
+      if (pts && pts.length === 1) {
+        ctx.fillStyle = '#22c55e';
+        ctx.beginPath();
+        ctx.arc(pts[0].x, pts[0].y, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      return;
+    }
 
-    // Semi-transparent mask outside the active lasso
+    // 2. Semi-transparent mask outside the active lasso
+    ctx.save();
     ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
     ctx.fillRect(0, 0, canvasSize.width, canvasSize.height);
-    ctx.save();
     ctx.globalCompositeOperation = 'destination-out';
     ctx.beginPath();
-    ctx.moveTo(cropPoints[0].x, cropPoints[0].y);
-    for (let i = 1; i < cropPoints.length; i++) {
-      ctx.lineTo(cropPoints[i].x, cropPoints[i].y);
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+      ctx.lineTo(pts[i].x, pts[i].y);
     }
     ctx.closePath();
     ctx.fill();
     ctx.restore();
 
-    // Lasso outline
-    ctx.strokeStyle = '#4ade80';
-    ctx.lineWidth = 2;
+    // 3. Lively lasso outline
+    ctx.save();
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 2.5;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.setLineDash([6, 4]);
     ctx.beginPath();
-    ctx.moveTo(cropPoints[0].x, cropPoints[0].y);
-    for (let i = 1; i < cropPoints.length; i++) {
-      ctx.lineTo(cropPoints[i].x, cropPoints[i].y);
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+      ctx.lineTo(pts[i].x, pts[i].y);
     }
-    ctx.closePath();
     ctx.stroke();
-    ctx.setLineDash([]);
 
-    // Start dot
-    ctx.fillStyle = '#4ade80';
+    // 4. Closing guide line back to origin
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.55)';
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(cropPoints[0].x, cropPoints[0].y, 5, 0, Math.PI * 2);
-    ctx.fill();
-  }, [cropPoints, canvasSize, detectedSuggestions, hoveredSuggestionId]);
+    ctx.moveTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+    ctx.lineTo(pts[0].x, pts[0].y);
+    ctx.stroke();
 
+    // 5. Start anchor dot
+    ctx.fillStyle = '#22c55e';
+    ctx.beginPath();
+    ctx.arc(pts[0].x, pts[0].y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.restore();
+  }, [canvasSize, hoveredSuggestionId]);
+
+  // ─── Draw Static Suggestions Overlay ───
+  const drawCropOverlay = useCallback(() => {
+    const cropCanvas = cropCanvasRef.current;
+    if (!cropCanvas) return;
+    const ctx = cropCanvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+
+    if (detectedSuggestions && detectedSuggestions.length > 0) {
+      detectedSuggestions.forEach((suggestion) => {
+        const poly = suggestion.polygon;
+        if (!poly || poly.length < 2) return;
+
+        const isHovered = suggestion.id === hoveredSuggestionId;
+        ctx.save();
+        ctx.strokeStyle = isHovered ? 'rgba(250, 204, 21, 0.95)' : 'rgba(56, 189, 248, 0.85)';
+        ctx.lineWidth = isHovered ? 3.5 : 2;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.setLineDash(isHovered ? [] : [4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(poly[0].x, poly[0].y);
+        for (let i = 1; i < poly.length; i++) {
+          ctx.lineTo(poly[i].x, poly[i].y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+      });
+    }
+
+    if (activeLassoPointsRef.current && activeLassoPointsRef.current.length > 0) {
+      renderActiveLassoToCanvas(activeLassoPointsRef.current);
+    }
+  }, [canvasSize, detectedSuggestions, hoveredSuggestionId, renderActiveLassoToCanvas]);
+
+  // Keep cropCanvas dimensions synced with DPR
+  useEffect(() => {
+    const cropCanvas = cropCanvasRef.current;
+    if (!cropCanvas) return;
+    const dpr = window.devicePixelRatio || 1;
+    cropCanvas.width = canvasSize.width * dpr;
+    cropCanvas.height = canvasSize.height * dpr;
+    cropCanvas.style.width = `${canvasSize.width}px`;
+    cropCanvas.style.height = `${canvasSize.height}px`;
+    const ctx = cropCanvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    drawCropOverlay();
+  }, [canvasSize, editorMode, drawCropOverlay]);
+
+  // Redraw suggestions when suggestions list or hover state updates
   useEffect(() => {
     if (editorMode === 'crop') {
       drawCropOverlay();
     }
-  }, [cropPoints, canvasSize, editorMode, drawCropOverlay]);
+  }, [editorMode, detectedSuggestions, hoveredSuggestionId, drawCropOverlay]);
+
+  // ─── Listen to external crop actions from ToolsPanel ───
+  useEffect(() => {
+    const handleAcceptAll = () => {
+      const suggestions = useStore.getState().detectedSuggestions;
+      if (!suggestions || suggestions.length === 0) return;
+
+      const currentTray = useStore.getState().cropTray;
+      cropUndoStack.current.push({ tray: [...currentTray] });
+      if (cropUndoStack.current.length > 30) cropUndoStack.current.shift();
+      cropRedoStack.current = [];
+      setCanCropUndo(true);
+      setCanCropRedo(false);
+
+      const newCrops = [];
+      for (const s of suggestions) {
+        const dataUrl = finalizeCropFromPoints(s.polygon);
+        if (dataUrl) {
+          newCrops.push({
+            id: Date.now().toString() + Math.random().toString(36).substring(2, 7),
+            dataUrl
+          });
+        }
+      }
+
+      if (newCrops.length > 0) {
+        setCropTray((prev) => [...prev, ...newCrops]);
+        setDetectedSuggestions([]);
+        window.dispatchEvent(new CustomEvent('app-toast', { detail: `✓ Accepted ${newCrops.length} illustration cut${newCrops.length > 1 ? 's' : ''}!` }));
+      }
+    };
+
+    const handleDismissAll = () => {
+      setDetectedSuggestions([]);
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: '✕ Suggestions cleared for freehand drawing' }));
+    };
+
+    const handleRedetect = () => {
+      if (canvasRef.current) {
+        runAutoDetect(canvasRef.current);
+        window.dispatchEvent(new CustomEvent('app-toast', { detail: '🪄 Re-detected illustration cuts' }));
+      }
+    };
+
+    window.addEventListener('crop-accept-all', handleAcceptAll);
+    window.addEventListener('crop-dismiss-all', handleDismissAll);
+    window.addEventListener('crop-redetect', handleRedetect);
+
+    return () => {
+      window.removeEventListener('crop-accept-all', handleAcceptAll);
+      window.removeEventListener('crop-dismiss-all', handleDismissAll);
+      window.removeEventListener('crop-redetect', handleRedetect);
+    };
+  }, [finalizeCropFromPoints, setCropTray, setDetectedSuggestions, runAutoDetect, setCanCropUndo, setCanCropRedo]);
 
   // ─── Render Ghost Image (original behind cutout) ───
   const renderGhost = useCallback((w, h) => {
@@ -1112,103 +1243,131 @@ export default function BackgroundEditor() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    activePointers.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    // Apple Pencil palm rejection: if pencil is active, ignore secondary touch inputs
+    if (e.pointerType === 'pen') {
+      activePenId.current = e.pointerId;
+    } else if (e.pointerType === 'touch' && activePenId.current !== null) {
+      return;
+    }
+
+    activePointers.current.set(e.pointerId, {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      pointerType: e.pointerType
+    });
 
     const shouldPan = editorMode === 'pan' || e.button === 2 || e.button === 1 || e.shiftKey;
 
-    if (activePointers.current.size === 1) {
-      if (shouldPan) {
-        setIsPanning(true);
-        try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-        dragStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
-      } else if (e.button === 0) {
-        const pos = getCanvasPos(e);
-        const ctx = canvas.getContext('2d');
-        
-        if (editorMode === 'crop') {
-          try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-          
-          const currentSnap = {
-            points: [...useStore.getState().cropPoints],
-            tray: [...useStore.getState().cropTray]
-          };
-          cropUndoStack.current.push(currentSnap);
-          if (cropUndoStack.current.length > 30) {
-            cropUndoStack.current.shift();
-          }
-          cropRedoStack.current = [];
-          setCanCropUndo(true);
-          setCanCropRedo(false);
-          
-          setIsDrawing(true);
-          const cx = Math.max(0, Math.min(canvasSize.width, pos.x));
-          const cy = Math.max(0, Math.min(canvasSize.height, pos.y));
-          setCropPoints([{ x: cx, y: cy }]);
-        } else if (editorMode === 'color') {
-          const pixel = ctx.getImageData(pos.x, pos.y, 1, 1).data;
-          if (pixel[3] > 0) {
-            saveSnapshot();
-            runFloodFill(canvas, Math.round(pos.x), Math.round(pos.y), pixel[0], pixel[1], pixel[2], pixel[3]);
-          }
-        } else if (editorMode === 'smart') {
-          try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-          
-          // First try 1-click outline removal (traces and erases connected outline around illustration)
-          const outlineRemoved = removeConnectedOutline(canvas, pos.x, pos.y);
-          if (!outlineRemoved) {
-            saveSnapshot();
-            applySmartBrush(canvas, pos.x, pos.y);
-          }
-          setIsDrawing(true);
-          lastDrawPos.current = { x: pos.x, y: pos.y };
-          
-          // Show and position cursor preview
-          const cursor = cursorRef.current;
-          if (cursor) {
-            cursor.style.display = 'block';
-            cursor.style.transform = `translate(${pos.x - brushSize / 2}px, ${pos.y - brushSize / 2}px)`;
-          }
-        } else {
-          try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
-          saveSnapshot();
-          setIsDrawing(true);
-          applyBrush(pos.x, pos.y);
-          
-          // Show and position cursor preview
-          const cursor = cursorRef.current;
-          if (cursor) {
-            cursor.style.display = 'block';
-            cursor.style.transform = `translate(${pos.x - brushSize / 2}px, ${pos.y - brushSize / 2}px)`;
-          }
-        }
-      }
-    } else if (activePointers.current.size === 2) {
-      if (isDrawing) {
-        setIsDrawing(false);
-      }
+    if (shouldPan) {
       setIsPanning(true);
-      
-      const pts = Array.from(activePointers.current.values());
-      initialDistance.current = Math.hypot(pts[0].clientX - pts[1].clientX, pts[0].clientY - pts[1].clientY);
+      try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+      dragStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+      return;
+    }
+
+    // Multi-touch gestures (pinch-to-zoom / two-finger pan) only if both pointers are touch and not pen drawing
+    const pts = Array.from(activePointers.current.values());
+    const touchPointers = pts.filter(p => p.pointerType === 'touch');
+
+    if (touchPointers.length === 2 && !activePenId.current && !isDrawingRef.current) {
+      setIsPanning(true);
+      initialDistance.current = Math.hypot(
+        touchPointers[0].clientX - touchPointers[1].clientX,
+        touchPointers[0].clientY - touchPointers[1].clientY
+      );
       initialMidpoint.current = {
-        x: (pts[0].clientX + pts[1].clientX) / 2,
-        y: (pts[0].clientY + pts[1].clientY) / 2
+        x: (touchPointers[0].clientX + touchPointers[1].clientX) / 2,
+        y: (touchPointers[0].clientY + touchPointers[1].clientY) / 2
       };
       initialZoom.current = zoom;
       initialPan.current = { ...pan };
-      
       if (cursorRef.current) {
         cursorRef.current.style.display = 'none';
+      }
+      return;
+    }
+
+    // Primary action (left click, touch, or Apple Pencil)
+    const isPrimaryAction = e.button === 0 || e.button === -1 || e.button === undefined || e.pointerType === 'pen' || e.pointerType === 'touch';
+
+    if (isPrimaryAction && !isDrawingRef.current) {
+      const pos = getCanvasPos(e);
+      const ctx = canvas.getContext('2d');
+
+      if (editorMode === 'crop') {
+        try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+        drawingPointerId.current = e.pointerId;
+        isDrawingRef.current = true;
+        setIsDrawing(true);
+
+        const currentSnap = {
+          points: [],
+          tray: [...useStore.getState().cropTray]
+        };
+        cropUndoStack.current.push(currentSnap);
+        if (cropUndoStack.current.length > 30) {
+          cropUndoStack.current.shift();
+        }
+        cropRedoStack.current = [];
+        setCanCropUndo(true);
+        setCanCropRedo(false);
+
+        const cx = Math.max(0, Math.min(canvasSize.width, pos.x));
+        const cy = Math.max(0, Math.min(canvasSize.height, pos.y));
+        activeLassoPointsRef.current = [{ x: cx, y: cy }];
+        renderActiveLassoToCanvas(activeLassoPointsRef.current);
+      } else if (editorMode === 'color') {
+        const pixel = ctx.getImageData(pos.x, pos.y, 1, 1).data;
+        if (pixel[3] > 0) {
+          saveSnapshot();
+          runFloodFill(canvas, Math.round(pos.x), Math.round(pos.y), pixel[0], pixel[1], pixel[2], pixel[3]);
+        }
+      } else if (editorMode === 'smart') {
+        try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+        drawingPointerId.current = e.pointerId;
+        isDrawingRef.current = true;
+        setIsDrawing(true);
+
+        const outlineRemoved = removeConnectedOutline(canvas, pos.x, pos.y);
+        if (!outlineRemoved) {
+          saveSnapshot();
+          applySmartBrush(canvas, pos.x, pos.y);
+        }
+        lastDrawPos.current = { x: pos.x, y: pos.y };
+
+        const cursor = cursorRef.current;
+        if (cursor) {
+          cursor.style.display = 'block';
+          cursor.style.transform = `translate(${pos.x - brushSize / 2}px, ${pos.y - brushSize / 2}px)`;
+        }
+      } else {
+        try { e.target.setPointerCapture(e.pointerId); } catch (_) {}
+        drawingPointerId.current = e.pointerId;
+        isDrawingRef.current = true;
+        setIsDrawing(true);
+        saveSnapshot();
+        applyBrush(pos.x, pos.y);
+
+        const cursor = cursorRef.current;
+        if (cursor) {
+          cursor.style.display = 'block';
+          cursor.style.transform = `translate(${pos.x - brushSize / 2}px, ${pos.y - brushSize / 2}px)`;
+        }
       }
     }
   };
 
   const handlePointerMove = (e) => {
+    // Palm rejection
+    if (e.pointerType === 'touch' && activePenId.current !== null) {
+      return;
+    }
+
     const canvas = canvasRef.current;
     const cursor = cursorRef.current;
     const pos = getCanvasPos(e);
 
-    // Position brush cursor preview on hover/move (runs regardless of click state)
+    // Position brush cursor preview on hover/move
     if (canvas && cursor && editorMode !== 'pan' && editorMode !== 'color' && editorMode !== 'crop') {
       cursor.style.display = 'block';
       cursor.style.transform = `translate(${pos.x - brushSize / 2}px, ${pos.y - brushSize / 2}px)`;
@@ -1217,100 +1376,120 @@ export default function BackgroundEditor() {
     }
 
     if (!activePointers.current.has(e.pointerId)) return;
-    activePointers.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    activePointers.current.set(e.pointerId, {
+      clientX: e.clientX,
+      clientY: e.clientY,
+      pointerType: e.pointerType
+    });
 
-    if (activePointers.current.size === 1) {
-      if (isPanning) {
-        setPan({
-          x: e.clientX - dragStart.current.x,
-          y: e.clientY - dragStart.current.y
-        });
-      } else {
-        if (isDrawing) {
-          if (editorMode === 'crop') {
-            const cx = Math.max(0, Math.min(canvasSize.width, pos.x));
-            const cy = Math.max(0, Math.min(canvasSize.height, pos.y));
-            setCropPoints((prev) => {
-              if (prev.length === 0) return [{ x: cx, y: cy }];
-              const last = prev[prev.length - 1];
-              const dist = Math.hypot(cx - last.x, cy - last.y);
-              if (dist < 3) return prev;
-              return [...prev, { x: cx, y: cy }];
-            });
-          } else if (editorMode === 'smart') {
-            const prev = lastDrawPos.current || pos;
-            const dist = Math.hypot(pos.x - prev.x, pos.y - prev.y);
-            const step = Math.max(3, brushSize / 4);
-            if (dist > step) {
-              const steps = Math.min(25, Math.ceil(dist / step));
-              for (let i = 1; i <= steps; i++) {
-                const ix = prev.x + (pos.x - prev.x) * (i / steps);
-                const iy = prev.y + (pos.y - prev.y) * (i / steps);
-                applySmartBrush(canvasRef.current, ix, iy);
-              }
-            } else {
-              applySmartBrush(canvasRef.current, pos.x, pos.y);
-            }
-            lastDrawPos.current = { x: pos.x, y: pos.y };
-          } else {
-            applyBrush(pos.x, pos.y);
-          }
-        }
-      }
-    } else if (activePointers.current.size === 2 && isPanning) {
-      if (cursor) {
-        cursor.style.display = 'none';
-      }
-      
-      const pts = Array.from(activePointers.current.values());
-      
-      const dist = Math.hypot(pts[0].clientX - pts[1].clientX, pts[0].clientY - pts[1].clientY);
+    const pts = Array.from(activePointers.current.values());
+    const touchPointers = pts.filter(p => p.pointerType === 'touch');
+
+    // Handle two-finger pinch-to-zoom
+    if (touchPointers.length === 2 && isPanning && initialDistance.current) {
+      if (cursor) cursor.style.display = 'none';
+
+      const dist = Math.hypot(
+        touchPointers[0].clientX - touchPointers[1].clientX,
+        touchPointers[0].clientY - touchPointers[1].clientY
+      );
       const factor = dist / (initialDistance.current || 1);
       const newZoom = Math.min(8, Math.max(0.15, initialZoom.current * factor));
       setZoom(newZoom);
 
       const mid = {
-        x: (pts[0].clientX + pts[1].clientX) / 2,
-        y: (pts[0].clientY + pts[1].clientY) / 2
+        x: (touchPointers[0].clientX + touchPointers[1].clientX) / 2,
+        y: (touchPointers[0].clientY + touchPointers[1].clientY) / 2
       };
       const dx = mid.x - initialMidpoint.current.x;
       const dy = mid.y - initialMidpoint.current.y;
-      
+
       setPan({
         x: initialPan.current.x + dx,
         y: initialPan.current.y + dy
       });
+      return;
+    }
+
+    if (isPanning) {
+      setPan({
+        x: e.clientX - dragStart.current.x,
+        y: e.clientY - dragStart.current.y
+      });
+      return;
+    }
+
+    if (isDrawingRef.current && e.pointerId === drawingPointerId.current) {
+      if (editorMode === 'crop') {
+        const cx = Math.max(0, Math.min(canvasSize.width, pos.x));
+        const cy = Math.max(0, Math.min(canvasSize.height, pos.y));
+        const ptsList = activeLassoPointsRef.current;
+        if (ptsList.length === 0) {
+          ptsList.push({ x: cx, y: cy });
+          renderActiveLassoToCanvas(ptsList);
+        } else {
+          const last = ptsList[ptsList.length - 1];
+          const dist = Math.hypot(cx - last.x, cy - last.y);
+          if (dist >= 2.5) {
+            ptsList.push({ x: cx, y: cy });
+            renderActiveLassoToCanvas(ptsList);
+          }
+        }
+      } else if (editorMode === 'smart') {
+        const prev = lastDrawPos.current || pos;
+        const dist = Math.hypot(pos.x - prev.x, pos.y - prev.y);
+        const step = Math.max(3, brushSize / 4);
+        if (dist > step) {
+          const steps = Math.min(25, Math.ceil(dist / step));
+          for (let i = 1; i <= steps; i++) {
+            const ix = prev.x + (pos.x - prev.x) * (i / steps);
+            const iy = prev.y + (pos.y - prev.y) * (i / steps);
+            applySmartBrush(canvasRef.current, ix, iy);
+          }
+        } else {
+          applySmartBrush(canvasRef.current, pos.x, pos.y);
+        }
+        lastDrawPos.current = { x: pos.x, y: pos.y };
+      } else {
+        applyBrush(pos.x, pos.y);
+      }
     }
   };
 
   const handlePointerUp = (e) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (e.pointerId === activePenId.current) {
+      activePenId.current = null;
+    }
+    if (e.pointerType === 'touch' && activePenId.current !== null) {
+      return;
+    }
 
     activePointers.current.delete(e.pointerId);
-    try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
 
     if (activePointers.current.size < 2) {
       initialDistance.current = null;
       initialMidpoint.current = null;
     }
 
-    if (activePointers.current.size === 0) {
-      const wasDrawing = isDrawing;
-      if (isPanning) {
-        setIsPanning(false);
-      }
-      if (isDrawing) {
-        setIsDrawing(false);
-        lastDrawPos.current = null;
-        smartColorSample.current = null;
-      }
-      if (cursorRef.current) {
-        cursorRef.current.style.display = 'none';
-      }
+    if (isPanning && activePointers.current.size === 0) {
+      setIsPanning(false);
+    }
+
+    if (cursorRef.current && activePointers.current.size === 0) {
+      cursorRef.current.style.display = 'none';
+    }
+
+    if (e.pointerId === drawingPointerId.current) {
+      drawingPointerId.current = null;
+      const wasDrawing = isDrawingRef.current;
+      isDrawingRef.current = false;
+      setIsDrawing(false);
+      lastDrawPos.current = null;
+      smartColorSample.current = null;
 
       if (editorMode === 'crop' && wasDrawing) {
-        const pts = useStore.getState().cropPoints;
+        const pts = activeLassoPointsRef.current;
         if (pts && pts.length >= 3) {
           const dataUrl = finalizeCropFromPoints(pts);
           if (dataUrl) {
@@ -1320,8 +1499,8 @@ export default function BackgroundEditor() {
             };
             setCropTray((prev) => [...prev, newCrop]);
             setCropPoints([]);
+            window.dispatchEvent(new CustomEvent('app-toast', { detail: '✓ Freehand crop added to tray!' }));
           } else {
-            // Invalid crop size, revert
             setCropPoints([]);
             if (cropUndoStack.current.length > 0) {
               cropUndoStack.current.pop();
@@ -1335,6 +1514,8 @@ export default function BackgroundEditor() {
           }
           setCanCropUndo(cropUndoStack.current.length > 0);
         }
+        activeLassoPointsRef.current = [];
+        drawCropOverlay();
       }
     }
   };
@@ -1354,12 +1535,11 @@ export default function BackgroundEditor() {
   }, [setDetectedSuggestions]);
 
   const handleAcceptSuggestion = useCallback((suggestion) => {
-    const currentPoints = useStore.getState().cropPoints;
     const currentTray = useStore.getState().cropTray;
-    
+
     // Push the state onto undo stack
     const currentSnap = {
-      points: [...currentPoints],
+      points: [],
       tray: [...currentTray]
     };
     cropUndoStack.current.push(currentSnap);
@@ -1377,8 +1557,8 @@ export default function BackgroundEditor() {
         dataUrl
       };
       setCropTray((prev) => [...prev, newCrop]);
+      window.dispatchEvent(new CustomEvent('app-toast', { detail: '✓ Illustration cut added to tray!' }));
     } else {
-      // Revert if crop failed
       cropUndoStack.current.pop();
       setCanCropUndo(cropUndoStack.current.length > 0);
     }
@@ -1396,9 +1576,37 @@ export default function BackgroundEditor() {
     <div
       ref={containerRef}
       className="workspace checkerboard"
-      style={{ overflow: 'hidden', position: 'relative', width: '100%', height: '100%' }}
+      style={{
+        overflow: 'hidden',
+        position: 'relative',
+        width: '100%',
+        height: '100%',
+        touchAction: 'none',
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
+      }}
       onWheel={handleWheel}
       onContextMenu={(e) => e.preventDefault()}
+      onPointerDown={(e) => {
+        if (editorMode === 'crop' && (e.target === containerRef.current || e.target.classList?.contains('canvas-container'))) {
+          handlePointerDown(e);
+        }
+      }}
+      onPointerMove={(e) => {
+        if (editorMode === 'crop' && isDrawingRef.current && e.pointerId === drawingPointerId.current) {
+          handlePointerMove(e);
+        }
+      }}
+      onPointerUp={(e) => {
+        if (editorMode === 'crop' && e.pointerId === drawingPointerId.current) {
+          handlePointerUp(e);
+        }
+      }}
+      onPointerCancel={(e) => {
+        if (editorMode === 'crop' && e.pointerId === drawingPointerId.current) {
+          handlePointerCancel(e);
+        }
+      }}
     >
       {/* 
         Loading overlay is kept as a static DOM element that fades out using CSS opacity 
@@ -1727,7 +1935,11 @@ export default function BackgroundEditor() {
 
       {/* Floating Crop Tray */}
       {editorMode === 'crop' && cropTray.length > 0 && (
-        <div className="crop-tray">
+        <div
+          className="crop-tray"
+          onPointerDown={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
           <div className="crop-tray-title">Pending ({cropTray.length})</div>
           <div className="crop-thumb-list">
             {cropTray.map((crop, idx) => (
@@ -1736,6 +1948,7 @@ export default function BackgroundEditor() {
                 <button 
                   className="crop-thumb-remove" 
                   title="Discard crop"
+                  onPointerDown={(e) => e.stopPropagation()}
                   onClick={(e) => {
                     e.stopPropagation();
                     
