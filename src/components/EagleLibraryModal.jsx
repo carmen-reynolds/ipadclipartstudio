@@ -9,16 +9,24 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
   const [filterQuery, setFilterQuery] = useState('');
   const [errorMsg, setErrorMsg] = useState(null);
 
+  const DEFAULT_TUNNEL_HOST = 'https://develop-fans-guam-pixel.trycloudflare.com';
+  const DEFAULT_LOCAL_HOST = 'http://10.0.0.117:5174';
+
   const getApiHost = () => {
     if (!window.location.hostname.includes('github.io')) {
       return '';
     }
     const saved = localStorage.getItem('eagle_api_host');
-    if (saved) return saved.replace(/\/+$/, '');
-    return 'http://10.0.0.117:5174';
+    // If saved is an unencrypted local IP on an HTTPS github.io page, it will be blocked by Safari mixed content
+    if (saved && saved.startsWith('https://')) {
+      return saved.replace(/\/+$/, '');
+    }
+    return DEFAULT_TUNNEL_HOST;
   };
 
   const [apiHost, setApiHost] = useState(getApiHost());
+  const [showServerConfig, setShowServerConfig] = useState(false);
+  const [customHostInput, setCustomHostInput] = useState(apiHost || DEFAULT_TUNNEL_HOST);
 
   const fetchBatch = async (newOffset = 0, append = false, host = apiHost) => {
     setLoading(true);
@@ -44,9 +52,15 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
         throw new Error(`HTTP ${res.status}`);
       }
     } catch (err) {
-      console.warn('Failed to fetch Eagle library:', err);
+      console.warn('Failed to fetch Eagle library from', host, err);
       if (!append) {
-        setErrorMsg(`Unable to load Eagle library from ${host || 'local server'}.`);
+        // If on github.io and failed, check if we can fall back to tunnel
+        if (host !== DEFAULT_TUNNEL_HOST && window.location.hostname.includes('github.io')) {
+          console.log('Falling back to secure Cloudflare tunnel...');
+          setApiHost(DEFAULT_TUNNEL_HOST);
+          return fetchBatch(newOffset, append, DEFAULT_TUNNEL_HOST);
+        }
+        setErrorMsg(`Unable to connect to Mac Eagle library at ${host || 'local server'}.`);
       }
     } finally {
       setLoading(false);
@@ -85,21 +99,124 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Folder size={20} style={{ color: 'var(--accent)' }} />
             <div>
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
-                Eagle Library — Recent Artwork
-              </h2>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 600, color: 'var(--text-primary)' }}>
+                  Eagle Library — Recent Artwork
+                </h2>
+                {items.length > 0 && (
+                  <span style={{
+                    fontSize: '10px',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+                    color: '#4ade80',
+                    fontWeight: 600,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px'
+                  }}>
+                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: '#22c55e' }} />
+                    Connected
+                  </span>
+                )}
+              </div>
               <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
                 Showing {items.length} of {total.toLocaleString()} illustrations in your library
               </div>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
-          >
-            <X size={20} />
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={() => setShowServerConfig(!showServerConfig)}
+              className="btn btn-secondary"
+              style={{ fontSize: '11px', padding: '4px 8px', display: 'flex', alignItems: 'center', gap: '4px' }}
+              title="Change server connection address"
+            >
+              <Globe size={12} />
+              <span>{apiHost?.includes('trycloudflare') ? 'Cloudflare Tunnel' : (apiHost ? 'Wi-Fi' : 'Direct')}</span>
+            </button>
+            <button
+              onClick={onClose}
+              style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px' }}
+            >
+              <X size={20} />
+            </button>
+          </div>
         </div>
+
+        {/* Server Config Collapsible Bar */}
+        {showServerConfig && (
+          <div style={{
+            marginTop: '10px',
+            padding: '10px 14px',
+            borderRadius: '8px',
+            backgroundColor: 'rgba(99, 102, 241, 0.1)',
+            border: '1px solid rgba(99, 102, 241, 0.25)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            fontSize: '12px'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <span style={{ fontWeight: 600, color: '#c7d2fe' }}>Eagle Mac Server Connection</span>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setApiHost(DEFAULT_TUNNEL_HOST);
+                    setCustomHostInput(DEFAULT_TUNNEL_HOST);
+                    localStorage.setItem('eagle_api_host', DEFAULT_TUNNEL_HOST);
+                    fetchBatch(0, false, DEFAULT_TUNNEL_HOST);
+                  }}
+                  style={{ fontSize: '10px', padding: '3px 8px' }}
+                >
+                  Use Cloudflare Tunnel (HTTPS)
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    setApiHost(DEFAULT_LOCAL_HOST);
+                    setCustomHostInput(DEFAULT_LOCAL_HOST);
+                    localStorage.setItem('eagle_api_host', DEFAULT_LOCAL_HOST);
+                    fetchBatch(0, false, DEFAULT_LOCAL_HOST);
+                  }}
+                  style={{ fontSize: '10px', padding: '3px 8px' }}
+                >
+                  Use Local Wi-Fi
+                </button>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <input
+                type="text"
+                value={customHostInput}
+                onChange={(e) => setCustomHostInput(e.target.value)}
+                placeholder="https://... or http://10.0.0.117:5174"
+                style={{
+                  flex: 1,
+                  padding: '6px 10px',
+                  borderRadius: '6px',
+                  backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                  border: '1px solid var(--border)',
+                  color: '#fff',
+                  fontSize: '11px'
+                }}
+              />
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  const cleaned = customHostInput.trim().replace(/\/+$/, '');
+                  setApiHost(cleaned);
+                  localStorage.setItem('eagle_api_host', cleaned);
+                  fetchBatch(0, false, cleaned);
+                }}
+                style={{ fontSize: '11px', padding: '6px 12px' }}
+              >
+                Connect
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Filter Input & Controls */}
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginTop: '12px' }}>
@@ -138,19 +255,45 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
         {errorMsg && (
           <div style={{
             marginTop: '12px',
-            padding: '10px 14px',
-            borderRadius: '8px',
+            padding: '12px 16px',
+            borderRadius: '10px',
             backgroundColor: 'rgba(239, 68, 68, 0.12)',
             border: '1px solid rgba(239, 68, 68, 0.3)',
             display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
+            flexDirection: 'column',
+            gap: '8px',
             fontSize: '12px',
             color: '#fca5a5'
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 600 }}>
               <WifiOff size={16} />
-              <span>{errorMsg} Check that your Mac Vite server is running at <code>{apiHost || 'http://10.0.0.117:5174'}</code>.</span>
+              <span>{errorMsg}</span>
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+              Safari on iPad blocks unencrypted local connections from HTTPS websites. Choose your connection method below:
+            </div>
+            <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setApiHost(DEFAULT_TUNNEL_HOST);
+                  setCustomHostInput(DEFAULT_TUNNEL_HOST);
+                  localStorage.setItem('eagle_api_host', DEFAULT_TUNNEL_HOST);
+                  fetchBatch(0, false, DEFAULT_TUNNEL_HOST);
+                }}
+                style={{ fontSize: '11px', padding: '6px 12px' }}
+              >
+                Connect via Cloudflare Tunnel (HTTPS)
+              </button>
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  window.location.href = 'http://10.0.0.117:5174';
+                }}
+                style={{ fontSize: '11px', padding: '6px 12px' }}
+              >
+                Switch to Local Wi-Fi (10.0.0.117)
+              </button>
             </div>
           </div>
         )}
