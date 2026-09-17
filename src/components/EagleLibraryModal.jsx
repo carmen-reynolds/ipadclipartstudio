@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Folder, Search, Loader2, X, RefreshCw, ChevronDown, Check } from 'lucide-react';
+import { Folder, Search, Loader2, X, RefreshCw, ChevronDown, Check, WifiOff, Globe, HardDrive } from 'lucide-react';
 
 export function EagleLibraryModal({ onSelectImage, onClose }) {
   const [items, setItems] = useState([]);
@@ -7,23 +7,47 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [filterQuery, setFilterQuery] = useState('');
+  const [errorMsg, setErrorMsg] = useState(null);
 
-  const fetchBatch = async (newOffset = 0, append = false) => {
+  const getApiHost = () => {
+    if (!window.location.hostname.includes('github.io')) {
+      return '';
+    }
+    const saved = localStorage.getItem('eagle_api_host');
+    if (saved) return saved.replace(/\/+$/, '');
+    return 'http://10.0.0.117:5174';
+  };
+
+  const [apiHost, setApiHost] = useState(getApiHost());
+
+  const fetchBatch = async (newOffset = 0, append = false, host = apiHost) => {
     setLoading(true);
+    setErrorMsg(null);
     try {
-      const res = await fetch(`/api/eagle-library?offset=${newOffset}&limit=100`);
+      const url = `${host}/api/eagle-library?offset=${newOffset}&limit=100`;
+      const res = await fetch(url);
       if (res.ok) {
         const data = await res.json();
         setTotal(data.total || 0);
         setOffset(newOffset);
+        const mappedItems = (data.items || []).map(it => ({
+          ...it,
+          thumbnailUrl: it.thumbnailUrl?.startsWith('http') ? it.thumbnailUrl : `${host}${it.thumbnailUrl}`,
+          originalUrl: it.originalUrl?.startsWith('http') ? it.originalUrl : `${host}${it.originalUrl}`
+        }));
         if (append) {
-          setItems(prev => [...prev, ...(data.items || [])]);
+          setItems(prev => [...prev, ...mappedItems]);
         } else {
-          setItems(data.items || []);
+          setItems(mappedItems);
         }
+      } else {
+        throw new Error(`HTTP ${res.status}`);
       }
     } catch (err) {
       console.warn('Failed to fetch Eagle library:', err);
+      if (!append) {
+        setErrorMsg(`Unable to load Eagle library from ${host || 'local server'}.`);
+      }
     } finally {
       setLoading(false);
     }
@@ -55,7 +79,7 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
 
   return (
     <div className="modal-backdrop" style={{ zIndex: 1100 }}>
-      <div className="modal-card" style={{ maxWidth: '850px', width: '95%', height: '85vh', display: 'flex', flexDirection: 'column' }}>
+      <div className="modal-card" style={{ maxWidth: '880px', width: '95%', height: '85vh', display: 'flex', flexDirection: 'column' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: '12px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -110,6 +134,27 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
           </button>
         </div>
 
+        {/* Error message / connection help banner if offline */}
+        {errorMsg && (
+          <div style={{
+            marginTop: '12px',
+            padding: '10px 14px',
+            borderRadius: '8px',
+            backgroundColor: 'rgba(239, 68, 68, 0.12)',
+            border: '1px solid rgba(239, 68, 68, 0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: '12px',
+            color: '#fca5a5'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <WifiOff size={16} />
+              <span>{errorMsg} Check that your Mac Vite server is running at <code>{apiHost || 'http://10.0.0.117:5174'}</code>.</span>
+            </div>
+          </div>
+        )}
+
         {/* Grid of Thumbnails */}
         <div style={{
           flex: 1,
@@ -117,8 +162,9 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
           marginTop: '12px',
           paddingRight: '4px',
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
-          gap: '12px',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(135px, 1fr))',
+          gridAutoRows: 'max-content',
+          gap: '14px',
           alignContent: 'start'
         }}>
           {filteredItems.map((it) => (
@@ -133,40 +179,85 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
                 cursor: 'pointer',
                 display: 'flex',
                 flexDirection: 'column',
-                transition: 'transform 0.15s ease, border-color 0.15s ease'
+                transition: 'transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease',
+                userSelect: 'none'
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.transform = 'scale(1.03)';
+                e.currentTarget.style.transform = 'translateY(-2px)';
                 e.currentTarget.style.borderColor = 'var(--accent)';
+                e.currentTarget.style.boxShadow = '0 6px 16px rgba(0,0,0,0.4)';
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.transform = 'scale(1)';
+                e.currentTarget.style.transform = 'translateY(0)';
                 e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.08)';
+                e.currentTarget.style.boxShadow = 'none';
               }}
             >
               <div style={{
                 width: '100%',
-                aspectRatio: '1/1',
+                aspectRatio: '1 / 1',
                 backgroundColor: '#070a12',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 overflow: 'hidden',
-                position: 'relative'
+                position: 'relative',
+                flexShrink: 0
               }}>
                 <img
                   src={it.thumbnailUrl}
                   alt={it.name}
                   loading="lazy"
-                  style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                  crossOrigin="anonymous"
+                  onError={(e) => {
+                    if (it.originalUrl && e.currentTarget.src !== it.originalUrl) {
+                      e.currentTarget.src = it.originalUrl;
+                    }
+                  }}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    objectFit: 'contain',
+                    display: 'block'
+                  }}
                 />
+                {/* File format badge */}
+                {it.ext && (
+                  <span style={{
+                    position: 'absolute',
+                    top: '6px',
+                    right: '6px',
+                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    backdropFilter: 'blur(4px)',
+                    WebkitBackdropFilter: 'blur(4px)',
+                    color: '#e2e8f0',
+                    fontSize: '9px',
+                    fontWeight: 700,
+                    textTransform: 'uppercase',
+                    padding: '2px 5px',
+                    borderRadius: '4px',
+                    letterSpacing: '0.5px',
+                    pointerEvents: 'none'
+                  }}>
+                    {it.ext}
+                  </span>
+                )}
               </div>
-              <div style={{ padding: '6px 8px', fontSize: '11px', lineHeight: 1.3 }}>
-                <div style={{ color: 'var(--text-primary)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div style={{ padding: '8px 10px', fontSize: '11px', lineHeight: 1.3, flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                <div
+                  title={it.name}
+                  style={{
+                    color: 'var(--text-primary)',
+                    fontWeight: 500,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
                   {it.name}
                 </div>
-                <div style={{ color: 'var(--text-muted)', fontSize: '9px', marginTop: '2px' }}>
-                  {it.width} × {it.height} px
+                <div style={{ color: 'var(--text-muted)', fontSize: '10px', marginTop: '3px' }}>
+                  {it.width && it.height ? `${it.width} × ${it.height} px` : (it.ext ? it.ext.toUpperCase() : '')}
                 </div>
               </div>
             </div>
@@ -182,7 +273,7 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
         {/* Footer with Load More */}
         <div style={{ borderTop: '1px solid var(--border)', paddingTop: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-            Showing {items.length} of {total} items
+            Showing {items.length} of {total.toLocaleString()} items
           </div>
           {items.length < total && (
             <button

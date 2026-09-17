@@ -31,10 +31,12 @@ function eagleLibraryPlugin() {
 
           const items = [];
           for (const [id, mtime] of sorted) {
-            const metaFile = path.join(EAGLE_LIB_PATH, 'images', `${id}.info`, 'metadata.json');
+            const infoDir = path.join(EAGLE_LIB_PATH, 'images', `${id}.info`);
+            const metaFile = path.join(infoDir, 'metadata.json');
             if (fs.existsSync(metaFile)) {
               try {
                 const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+                if (meta.isDeleted) continue;
                 items.push({
                   id,
                   name: meta.name,
@@ -49,7 +51,11 @@ function eagleLibraryPlugin() {
             }
           }
 
-          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+            'Cross-Origin-Resource-Policy': 'cross-origin'
+          });
           res.end(JSON.stringify({ total: Object.keys(mtimes).length, offset, limit, items }));
         } catch (err) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -76,32 +82,66 @@ function eagleLibraryPlugin() {
           }
 
           const metaFile = path.join(infoDir, 'metadata.json');
-          const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
-
-          let filePath = '';
-          if (isThumb) {
-            const thumbName = `${meta.name}_thumbnail.png`;
-            filePath = path.join(infoDir, thumbName);
-            if (!fs.existsSync(filePath)) {
-              filePath = path.join(infoDir, `${meta.name}.${meta.ext}`);
-            }
-          } else {
-            filePath = path.join(infoDir, `${meta.name}.${meta.ext}`);
+          let meta = {};
+          if (fs.existsSync(metaFile)) {
+            try {
+              meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+            } catch (_) {}
           }
 
-          if (!fs.existsSync(filePath)) {
+          let filePath = '';
+          if (isThumb && meta.name) {
+            const thumbName = `${meta.name}_thumbnail.png`;
+            const checkThumb = path.join(infoDir, thumbName);
+            if (fs.existsSync(checkThumb)) {
+              filePath = checkThumb;
+            }
+          }
+
+          // Fallback to original file
+          if (!filePath && meta.name && meta.ext) {
+            const origName = `${meta.name}.${meta.ext}`;
+            const checkOrig = path.join(infoDir, origName);
+            if (fs.existsSync(checkOrig)) {
+              filePath = checkOrig;
+            }
+          }
+
+          // Directory scan fallback for sanitized names or alternate extensions
+          if (!filePath || !fs.existsSync(filePath)) {
+            const dirFiles = fs.readdirSync(infoDir);
+            const candidate = isThumb
+              ? dirFiles.find(f => f.includes('_thumbnail')) || dirFiles.find(f => !f.endsWith('.json'))
+              : dirFiles.find(f => !f.endsWith('.json') && !f.includes('_thumbnail')) || dirFiles.find(f => !f.endsWith('.json'));
+            if (candidate) {
+              filePath = path.join(infoDir, candidate);
+            }
+          }
+
+          if (!filePath || !fs.existsSync(filePath)) {
             res.writeHead(404);
             return res.end('File not found');
           }
 
           const stat = fs.statSync(filePath);
           const ext = path.extname(filePath).toLowerCase();
-          const contentType = ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.webp' ? 'image/webp' : 'application/octet-stream';
+          const mimeMap = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+            '.avif': 'image/avif',
+            '.gif': 'image/gif',
+            '.svg': 'image/svg+xml'
+          };
+          const contentType = mimeMap[ext] || 'application/octet-stream';
 
           res.writeHead(200, {
             'Content-Type': contentType,
             'Content-Length': stat.size,
-            'Access-Control-Allow-Origin': '*'
+            'Access-Control-Allow-Origin': '*',
+            'Cross-Origin-Resource-Policy': 'cross-origin',
+            'Cache-Control': 'public, max-age=86400'
           });
           fs.createReadStream(filePath).pipe(res);
         } catch (err) {
