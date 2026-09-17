@@ -7,7 +7,14 @@ import { EagleLibraryModal } from './components/EagleLibraryModal';
 import { ImmichSearchModal } from './components/ImmichSearchModal';
 import { processBackgroundRemovalInBrowser } from './services/backgroundRemoval';
 import { detectElementsFromCanvas } from './services/elementDetector';
-import { saveFileToICloudOrDownload, sendDirectToEagle } from './services/eagleSync';
+import { 
+  saveFileToICloudOrDownload, 
+  saveMultipleFilesToICloudOrDownload, 
+  saveCropsToEagleServer, 
+  saveSingleToEagleServer, 
+  sendDirectToEagle, 
+  getEagleApiHost 
+} from './services/eagleSync';
 import { 
   Scissors, 
   Upload, 
@@ -19,7 +26,8 @@ import {
   Wifi,
   Sliders,
   X,
-  Folder
+  Folder,
+  Loader2
 } from 'lucide-react';
 
 export default function App() {
@@ -42,6 +50,7 @@ export default function App() {
 
   const [isLoading, setIsLoading] = useState(false);
   const [loadingText, setLoadingText] = useState('');
+  const [isSavingCrops, setIsSavingCrops] = useState(false);
   const [showWorkflowModal, setShowWorkflowModal] = useState(false);
   const [showEagleModal, setShowEagleModal] = useState(false);
   const [showImmichModal, setShowImmichModal] = useState(false);
@@ -182,44 +191,88 @@ export default function App() {
       if (!blob) return;
       const baseName = (imageMeta?.name || 'cutout').replace(/\.[^/.]+$/, '');
       const filename = `${baseName}_bg-removed.png`;
+      const apiHost = getEagleApiHost();
 
-      // Save to iCloud Drive (or download)
+      // Save to iCloud Drive (or download / share)
       const res = await saveFileToICloudOrDownload(blob, filename);
 
-      // Also send over Wi-Fi to Eagle if configured
-      if (eagleHost) {
-        await sendDirectToEagle(blob, filename, ['bg-removed', 'ipad'], eagleHost);
+      // Save directly to Eagle Mac server if available
+      if (apiHost || !window.location.hostname.includes('github.io')) {
+        saveSingleToEagleServer(blob, filename, ['bg-removed', 'ipad'], apiHost);
+      } else if (eagleHost) {
+        sendDirectToEagle(blob, filename, ['bg-removed', 'ipad'], eagleHost);
       }
 
       if (res && res.success) {
-        showToast(`Saved ${filename} to Eagle iCloud Folder!`);
+        showToast(`Saved ${filename}!`);
       }
     }, 'image/png');
   };
 
   const handleSaveAllCrops = async () => {
-    if (cropTray.length === 0) return;
+    if (cropTray.length === 0 || isSavingCrops) return;
 
+    setIsSavingCrops(true);
     const baseName = (imageMeta?.name || 'artwork').replace(/\.[^/.]+$/, '');
-    let savedCount = 0;
+    const apiHost = getEagleApiHost();
 
-    for (let i = 0; i < cropTray.length; i++) {
-      const crop = cropTray[i];
-      const filename = `${baseName}_crop-${i + 1}.png`;
-
-      // Convert dataUrl to blob
-      const res = await fetch(crop.dataUrl);
-      const blob = await res.blob();
-
-      await saveFileToICloudOrDownload(blob, filename);
-
-      if (eagleHost) {
-        await sendDirectToEagle(blob, filename, ['cropped', 'ipad'], eagleHost);
+    try {
+      // 1. Prepare items with blobs and filenames for all crops
+      const items = [];
+      for (let i = 0; i < cropTray.length; i++) {
+        const crop = cropTray[i];
+        const filename = `${baseName}_crop-${i + 1}.png`;
+        const res = await fetch(crop.dataUrl);
+        const blob = await res.blob();
+        items.push({
+          blob,
+          filename,
+          dataUrl: crop.dataUrl,
+        });
       }
-      savedCount++;
-    }
 
-    showToast(`Saved ${savedCount} crop(s) to Eagle!`);
+      // 2. Automatically sync directly to Mac Eagle Library if server is available
+      let eagleSaved = false;
+      let eagleCount = 0;
+      if (apiHost || !window.location.hostname.includes('github.io')) {
+        const eagleRes = await saveCropsToEagleServer(items, apiHost);
+        if (eagleRes && eagleRes.success && eagleRes.savedCount > 0) {
+          eagleSaved = true;
+          eagleCount = eagleRes.savedCount;
+        }
+      } else if (eagleHost) {
+        for (const it of items) {
+          await sendDirectToEagle(it.blob, it.filename, ['cropped', 'ipad'], eagleHost);
+        }
+        eagleSaved = true;
+        eagleCount = items.length;
+      }
+
+      // 3. Save to iPad (native multi-file Web Share sheet "Save N Images" or staggered download)
+      const shareRes = await saveMultipleFilesToICloudOrDownload(items);
+
+      if (shareRes.cancelled && !eagleSaved) {
+        showToast('Save cancelled');
+        setIsSavingCrops(false);
+        return;
+      }
+
+      // 4. Success feedback and clear pending crop tray
+      if (eagleSaved && shareRes.success) {
+        showToast(`Saved all ${items.length} crops to iPad & Eagle Library!`);
+      } else if (eagleSaved) {
+        showToast(`Saved all ${eagleCount} crops directly to Eagle Library!`);
+      } else {
+        showToast(`Saved all ${items.length} crops!`);
+      }
+
+      setCropTray([]);
+    } catch (err) {
+      console.error('Failed to save all crops:', err);
+      showToast('Error saving crops: ' + err.message);
+    } finally {
+      setIsSavingCrops(false);
+    }
   };
 
   return (
@@ -418,22 +471,33 @@ export default function App() {
               <button
                 className="btn btn-success"
                 onClick={handleSaveAllCrops}
+                disabled={isSavingCrops}
                 style={{
                   fontSize: '12px',
                   fontWeight: 600,
                   padding: '7px 18px',
-                  backgroundColor: '#10b981',
+                  backgroundColor: isSavingCrops ? '#059669' : '#10b981',
+                  opacity: isSavingCrops ? 0.85 : 1,
                   color: '#ffffff',
                   borderRadius: '8px',
                   border: 'none',
-                  cursor: 'pointer',
+                  cursor: isSavingCrops ? 'wait' : 'pointer',
                   display: 'flex',
                   alignItems: 'center',
                   gap: '6px'
                 }}
               >
-                <Check size={14} />
-                <span>Save All Crops ({cropTray.length})</span>
+                {isSavingCrops ? (
+                  <>
+                    <Loader2 size={14} className="spin" />
+                    <span>Saving {cropTray.length} Crops...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check size={14} />
+                    <span>Save All Crops ({cropTray.length})</span>
+                  </>
+                )}
               </button>
             ) : (
               <button

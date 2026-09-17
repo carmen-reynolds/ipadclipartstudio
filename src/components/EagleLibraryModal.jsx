@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Folder, Search, Loader2, X, RefreshCw, ChevronDown, Check, WifiOff, Globe, HardDrive } from 'lucide-react';
+import { DEFAULT_TUNNEL_HOST, getEagleApiHost } from '../services/eagleSync';
 
 export function EagleLibraryModal({ onSelectImage, onClose }) {
   const [items, setItems] = useState([]);
@@ -9,24 +10,11 @@ export function EagleLibraryModal({ onSelectImage, onClose }) {
   const [filterQuery, setFilterQuery] = useState('');
   const [errorMsg, setErrorMsg] = useState(null);
 
-  const DEFAULT_TUNNEL_HOST = 'https://develop-fans-guam-pixel.trycloudflare.com';
   const DEFAULT_LOCAL_HOST = 'http://10.0.0.117:5174';
 
-  const getApiHost = () => {
-    if (!window.location.hostname.includes('github.io')) {
-      return '';
-    }
-    const saved = localStorage.getItem('eagle_api_host');
-    // If saved is an unencrypted local IP on an HTTPS github.io page, it will be blocked by Safari mixed content
-    if (saved && saved.startsWith('https://')) {
-      return saved.replace(/\/+$/, '');
-    }
-    return DEFAULT_TUNNEL_HOST;
-  };
-
-  const [apiHost, setApiHost] = useState(getApiHost());
+  const [apiHost, setApiHost] = useState(getEagleApiHost());
   const [showServerConfig, setShowServerConfig] = useState(false);
-  const [customHostInput, setCustomHostInput] = useState(apiHost || DEFAULT_TUNNEL_HOST);
+  const [customHostInput, setCustomHostInput] = useState(getEagleApiHost() || DEFAULT_TUNNEL_HOST);
 
   const fetchBatch = async (newOffset = 0, append = false, host = apiHost) => {
     setLoading(true);
